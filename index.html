@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>飯糰小幫手 ｜ 行動財務後台</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+</head>
+<body class="bg-[#0A1128] text-white font-sans antialiased pb-12 selection:bg-white/20">
+
+    <header class="bg-[#000411]/60 backdrop-blur-md text-white/90 text-center py-4.5 font-medium text-sm tracking-widest uppercase border-b border-white/5 sticky top-0 z-50">
+        RICE COOKER TECH ｜ 雲端帳本
+    </header>
+
+    <main class="max-w-md mx-auto px-6 mt-6 space-y-6">
+
+        <section class="bg-[#1C2541] rounded-2xl p-6 text-white shadow-xl relative overflow-hidden border border-white/5">
+            <h2 class="text-[11px] text-white/50 font-medium tracking-widest uppercase">本月結餘總覽</h2>
+            <div id="net-balance" class="text-3xl font-bold mt-1 tracking-tight font-mono">$0</div>
+            
+            <div class="grid grid-cols-2 gap-4 mt-6 pt-5 border-t border-white/10">
+                <div>
+                    <span class="text-[10px] text-white/40 block tracking-wider uppercase">Income 總收入</span>
+                    <span id="total-income" class="text-base font-bold text-white font-mono">+$0</span>
+                </div>
+                <div class="border-l border-white/10 pl-4">
+                    <span class="text-[10px] text-white/40 block tracking-wider uppercase">Expense 總支出</span>
+                    <span id="total-expense" class="text-base font-medium text-white/70 font-mono">-$0</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="bg-[#1C2541] rounded-2xl p-6 shadow-xl border border-white/5">
+            <h3 class="text-[11px] font-bold text-white/50 tracking-widest uppercase mb-4 flex items-center gap-2">
+                <span class="w-1 h-1 rounded-full bg-white"></span>
+                支出分類比例
+            </h3>
+            <div class="w-full max-w-[240px] mx-auto my-2">
+                <canvas id="expenseChart"></canvas>
+            </div>
+        </section>
+
+        <section class="bg-[#1C2541] rounded-2xl p-6 shadow-xl border border-white/5">
+            <h3 class="text-[11px] font-bold text-white/50 tracking-widest uppercase mb-2">📑 本月收支明細</h3>
+            <div id="loading-text" class="text-center py-8 text-white/30 text-xs tracking-wider">雲端數據同步中...</div>
+            <div id="history-list" class="space-y-4 divide-y divide-white/5">
+                </div>
+        </section>
+
+    </main>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, query, where, orderBy, getDocs } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // 🚀 填入你專案的前端 Firebase Config
+        const firebaseConfig = {
+        apiKey: "AIzaSyCqTPnsxv_hOJkR0BnsKjQWgLvlQ3GR9E0",
+        authDomain: "ricemoney-db.firebaseapp.com",
+        projectId: "ricemoney-db",
+        storageBucket: "ricemoney-db.firebasestorage.app",
+        messagingSenderId: "114147437445",
+        appId: "1:114147437445:web:3b6dde2873baf6fb3232ec",
+        measurementId: "G-55SFYJSG6D"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // 💡 測試階段：請置換成您自己的 LINE User ID
+        const TEST_USER_ID = "Uf49f6fdce75522a0034c03553315a3f5"; 
+
+        let myChart = null;
+
+        async function loadDashboardData(userId) {
+            try {
+                const now = new Date();
+                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+                const expensesRef = collection(db, "users", userId, "expenses");
+                const q = query(expensesRef, where("timestamp", ">=", startOfMonth), orderBy("timestamp", "desc"));
+                const querySnapshot = await getDocs(q);
+
+                let incomeTotal = 0;
+                let expenseTotal = 0;
+                let categoryData = {};
+                let listHtml = "";
+
+                document.getElementById("loading-text").classList.add("hidden");
+
+                if (querySnapshot.empty) {
+                    document.getElementById("history-list").innerHTML = `<div class="text-center py-8 text-white/30 text-xs tracking-wider">本月帳本尚無任何數據。</div>`;
+                    return;
+                }
+
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data(); 
+                    const amt = data.amount || 0;
+                    const type = data.type || "expense";
+                    const item = data.item || "未命名";
+                    const cat = data.category || "生活雜費";
+                    
+                    const dateObj = data.timestamp ? data.timestamp.toDate() : new Date();
+                    const dateStr = `${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+
+                    if (type === "income") {
+                        incomeTotal += amt;
+                        listHtml += `
+                            <div class="flex justify-between items-center pt-4 text-sm first:pt-0">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-7 h-7 rounded-full bg-white text-[#0A1128] font-bold text-[11px] flex items-center justify-center">入</div>
+                                    <div class="flex flex-col">
+                                        <span class="font-medium text-white tracking-wide">${item}</span>
+                                        <span class="text-[10px] text-white/40 mt-0.5">${cat}</span>
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <span class="font-bold text-white font-mono">+ $${amt.toLocaleString()}</span>
+                                    <span class="text-white/30 block text-[9px] mt-0.5">${dateStr}</span>
+                                </div>
+                            </div>`;
+                    } else {
+                        expenseTotal += amt; 
+                        categoryData[cat] = (categoryData[cat] || 0) + amt;
+                        listHtml += `
+                            <div class="flex justify-between items-center pt-4 text-sm first:pt-0">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-7 h-7 rounded-full bg-white/10 text-white/80 font-medium text-[11px] flex items-center justify-center border border-white/5">支</div>
+                                    <div class="flex flex-col">
+                                        <span class="font-medium text-white/90 tracking-wide">${item}</span>
+                                        <span class="text-[10px] text-white/40 mt-0.5">${cat}</span>
+                                    </div>
+                                </div>
+                                <div class="text-right">
+                                    <span class="font-medium text-white/60 font-mono">- $${amt.toLocaleString()}</span>
+                                    <span class="text-white/30 block text-[9px] mt-0.5">${dateStr}</span>
+                                </div>
+                            </div>`;
+                    }
+                });
+
+                document.getElementById("total-income").innerText = `+$${incomeTotal.toLocaleString()}`;
+                document.getElementById("total-expense").innerText = `-$${expenseTotal.toLocaleString()}`;
+                const net = incomeTotal - expenseTotal;
+                document.getElementById("net-balance").innerText = `${net >= 0 ? '' : '-'}$$${Math.abs(net).toLocaleString()}`;
+                document.getElementById("history-list").innerHTML = listHtml;
+
+                renderChart(categoryData);
+
+            } catch (error) {
+                console.error("讀取資料失敗:", error);
+                document.getElementById("loading-text").innerText = "❌ 資料載入異常。";
+            }
+        }
+
+        function renderChart(categoryData) {
+            const canvasElement = document.getElementById('expenseChart');
+            if (!canvasElement) return;
+            
+            const ctx = canvasElement.getContext('2d'); 
+            const labels = Object.keys(categoryData);
+            const dataValues = Object.values(categoryData);
+
+            if (labels.length === 0) {
+                canvasElement.parentElement.innerHTML = `<div class="text-center py-6 text-white/20 text-xs tracking-wider">暫無支出分類統計</div>`;
+                return;
+            }
+
+            if (myChart) { myChart.destroy(); }
+
+            myChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: dataValues,
+                        // 🚀 圓餅圖改為單一深藍與白色調演變的「高級灰階漸層」
+                        backgroundColor: [
+                            '#FFFFFF', // 純白
+                            '#E2E8F0', // 亮灰白
+                            '#94A3B8', // 霧藍灰
+                            '#475569', // 深石板灰
+                            '#334155', // 襯底深藍灰
+                            '#1E293B'  // 極深藍灰
+                        ],
+                        borderWidth: 2,
+                        borderColor: '#1C2541' // 與面板背景融為一體的切割線
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { 
+                                boxWidth: 8, 
+                                padding: 12,
+                                font: { size: 10, weight: 'normal' },
+                                color: 'rgba(255, 255, 255, 0.5)' 
+                            }
+                        }
+                    },
+                    cutout: '75%' // 更細緻的線條環狀圖感
+                }
+            });
+        }
+
+        loadDashboardData(TEST_USER_ID);
+    </script>
+</body>
+</html>
