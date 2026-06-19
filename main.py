@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="飯糰小幫手 ｜ 一人工作室商用最終版")
+app = FastAPI(title="飯糰小幫手 ｜ 一人工作室商用最終完全體")
 
 # ==========================================
 # ⚙️ 1. 核心客戶端與資料庫初始化
@@ -41,7 +41,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # 🔥 請填入你在 LINE Developers 後台看到的 LIFF ID
-MY_LIFF_ID = "2010446205-W1G1WDQQ" 
+MY_LIFF_ID = "YOUR_LIFF_ID_HERE" 
 
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -67,13 +67,8 @@ else:
 # ==========================================
 SENSITIVE_KEYWORDS = ["政治", "選舉", "總統", "政黨", "戰爭", "吸毒", "賭博", "情色", "自殺", "殺人"]
 
-# 🚀 記憶快取：儲存待確認的記帳資料結構，防範 NameError 關鍵核心
+# 🚀 記憶快取：儲存待確認的記帳資料結構
 PENDING_CONFIRMATIONS = {}
-
-# 本地快速解析正則式（不耗 Token）
-ACCOUNTING_PATTERN = re.compile(r'^([^\s]+)\s+(\d+)\s+([^\s]+)$')
-SETTLE_PATTERN_1 = re.compile(r'^核銷\s+(\d+)\s+([^\s]+)$')
-SETTLE_PATTERN_2 = re.compile(r'^([^\s]+)\s+(\d+)\s+核銷$')
 
 class SingleRecord(BaseModel):
     record_type: Literal["expense", "income"] = Field(default="expense")
@@ -82,9 +77,15 @@ class SingleRecord(BaseModel):
     category: str = Field(default="生活雜費")
     note: str = Field(default="")
 
+class SingleSettlement(BaseModel):
+    payer_name: str = Field(description="付出款項、要把錢還給別人的那個人名字")
+    receiver_name: str = Field(description="收到款項、拿回錢的那個人名字")
+    amount: int = Field(default=0, description="核銷、還錢的具體金額")
+
 class SuperRouter(BaseModel):
-    intent: Literal["record", "chat_with_record", "chat", "analyze", "sensitive"] = Field(description="核心意圖分流")
+    intent: Literal["record", "chat_with_record", "chat", "analyze", "sensitive", "settlement"] = Field(description="核心意圖分流，若屬於還錢、平帳、核銷，請歸類為 settlement")
     records: Optional[List[SingleRecord]] = Field(default_factory=list)
+    settlement: Optional[SingleSettlement] = Field(default=None, description="核銷平帳專用結構")
     ai_reply: Optional[str] = Field(default="")
 
 # ==========================================
@@ -105,7 +106,7 @@ def get_line_user_profile(user_id: str) -> str:
 def is_pure_category_and_amount(user_text: str) -> Optional[List[SingleRecord]]:
     """極速判斷：若純打「便當 120」，免經大腦直接落庫"""
     text_clean = user_text.strip()
-    if len(text_clean) > 10 or any(k in text_clean for k in ["今天", "昨天", "了", "哈哈", "嗨", "核銷"]): 
+    if len(text_clean) > 10 or any(k in text_clean for k in ["今天", "昨天", "了", "哈哈", "嗨", "核銷", "還", "給"]): 
         return None
     numbers_find = list(re.finditer(r'\d+', text_clean))
     if len(numbers_find) != 1: 
@@ -115,8 +116,8 @@ def is_pure_category_and_amount(user_text: str) -> Optional[List[SingleRecord]]:
         amount = int(match.group())
         prev_text = text_clean[:match.start()].strip()
         next_text = text_clean[match.end():].strip()
-        clean_prev = re.sub(r'[^\u4e00-\u9fa5a-zA-Z]', '', prev_text)
-        clean_next = re.sub(r'[^\u4e00-\u9fa5a-zA-Z]', '', next_text).replace("元", "").replace("塊", "")
+        clean_prev = re.sub(r'[^一-龥a-zA-Z]', '', prev_text)
+        clean_next = re.sub(r'[^一-龥a-zA-Z]', '', next_text).replace("元", "").replace("塊", "")
         item = clean_prev if clean_prev else (clean_next if clean_next else "日常支出")
         
         category = "生活雜費"
@@ -130,44 +131,11 @@ def is_pure_category_and_amount(user_text: str) -> Optional[List[SingleRecord]]:
     except Exception: 
         return None
 
-def process_settlement_local(group_id: str, creator_id: str, user_text: str) -> Optional[str]:
-    """🎯 群組核銷解析器：將成員平帳資訊記入資料庫，若不合格式則回傳 None 保底"""
-    text_clean = user_text.strip()
-    match1 = SETTLE_PATTERN_1.match(text_clean)
-    match2 = SETTLE_PATTERN_2.match(text_clean)
-    
-    amount, target_name = None, None
-    if match1:
-        amount = int(match1.group(1))
-        target_name = match1.group(2)
-    elif match2:
-        target_name = match2.group(1)
-        amount = int(match2.group(2))
-        
-    if amount and target_name:
-        try:
-            payer_name = get_line_user_profile(creator_id)
-            group_ref = db.collection("groups").document(group_id)
-            if not group_ref.get().exists: 
-                group_ref.set({"group_id": group_id, "created_at": datetime.utcnow()})
-            
-            group_ref.collection("settlements").document().set({
-                "payer_uid": creator_id,
-                "payer_name": payer_name,
-                "receiver_name": target_name,
-                "amount": amount,
-                "timestamp": datetime.utcnow()
-            })
-            return f"🤝 【群組核銷成功】\n💸 付款對帳者：{payer_name}\n📥 收款對象：{target_name}\n💰 核銷金額：${amount:,} 元\n\n系統已自動完成對帳登記，詳細流水請點開後台「核銷紀錄」查看！"
-        except Exception as e:
-            return f"⚠️ 核銷寫入失敗，請檢查資料庫連線: {e}"
-    return None
-
 # ==========================================
 # 🤖 4. AI 核心運算與資料庫同步控制
 # ==========================================
 def analyze_with_gemini_sync(user_text: str) -> SuperRouter:
-    prompt = f"你是一個具備頂級商業敏銳度的記帳助理「飯糰小幫手」。請透視使用者的語意輸入：『{user_text}』進行強型別分流。若提到報表、查帳、統計、看後台等，intent 務必歸為 analyze。"
+    prompt = f"你是一個具備頂級商業敏銳度的記帳助理「飯糰小幫手」。請透視使用者的語意輸入：『{user_text}』進行強型別分流。若提到報表、查帳、統計、看後台等，intent 務必歸為 analyze。若提及還錢、平帳、核銷、誰給誰多少錢，intent 務必歸為 settlement。"
     response = ai_client.models.generate_content(
         model='gemini-2.5-flash', contents=prompt,
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=SuperRouter, temperature=0.2),
@@ -202,6 +170,26 @@ def save_records_to_db_v2(target_id: str, is_group: bool, creator_id: str, recor
         batch.commit()
         return True
     except Exception: 
+        return False
+
+def save_settlement_from_ai(group_id: str, creator_id: str, settle: SingleSettlement) -> bool:
+    if db is None or not settle or settle.amount <= 0: 
+        return False
+    try:
+        group_ref = db.collection("groups").document(group_id)
+        if not group_ref.get().exists: 
+            group_ref.set({"group_id": group_id, "created_at": datetime.utcnow()})
+        
+        group_ref.collection("settlements").document().set({
+            "payer_name": settle.payer_name.strip(),
+            "receiver_name": settle.receiver_name.strip(),
+            "amount": settle.amount,
+            "timestamp": datetime.utcnow(),
+            "triggered_by_uid": creator_id
+        })
+        return True
+    except Exception as e:
+        print(f"❌ 核銷寫入失敗: {e}")
         return False
 
 def get_monthly_quick_summary_v2(target_id: str, is_group: bool) -> str:
@@ -240,7 +228,6 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     body_str = body.decode("utf-8")
     
-    # 解決 LINE 官方 LIFF 自動觸發機制，防範空響應
     if body_str and '"text":"請教導我該如何使用？"' in body_str: 
         return Response(content="OK", status_code=200)
         
@@ -260,30 +247,26 @@ def handle_text_message(event):
     is_group = event.source.type == "group"
     target_id = event.source.group_id if is_group else creator_id
 
-    # 🚀 【核心優化：群組防吵與節流機制】
-    # 如果是群組訊息，且「沒有被 Tag」也沒有提及機器人名字，直接句終不回應
-    
+    # 🚀 【核心群組防吵與節流機制】
     is_mentioned = False
     if is_group:
-        # 1. 檢查 LINE 官方的 mention 機制（使用者點選 @機器人）
-       # 🚀 修正後的寫法：
+        # 1. LINE 官方 Mentionees 機制 
         mention = getattr(event.message, "mention", None)
-        if mention and mention.mentionees: # 🎯 對齊 LINE SDK 官方欄位
+        if mention and mention.mentionees:
             is_mentioned = True
         
-        # 2. 模糊匹配（使用者手打 @飯糰、飯糰小幫手、或純飯糰）
-        if any(keyword in user_text for keyword in ["@飯糰", "飯糰"]):
+        # 2. 關鍵字模糊喚醒
+        if any(keyword in user_text for keyword in ["@飯糰", "飯糰", "核銷", "還錢", "給錢"]):
             is_mentioned = True
 
-        # 3. 狀態機例外（如果該成員正在「確認記帳中」，允許不帶 tag 直接回覆「好/不要」）
+        # 3. 狀態機上下文解鎖
         if creator_id in PENDING_CONFIRMATIONS:
             is_mentioned = True
 
-        # 💡 如果以上條件都不符合，代表不是在叫機器人，直接 return 結束，完全不耗 Token！
         if not is_mentioned:
             return
 
-        # 清洗掉文字中的標籤文字，避免干擾 AI 記帳語意解析
+        # 清洗呼叫文字防止干擾大腦語意
         user_text = user_text.replace("@飯糰", "").replace("飯糰", "").strip()
 
     reply_str = ""
@@ -299,18 +282,7 @@ def handle_text_message(event):
             except Exception: 
                 return
 
-    # 🤝 攔截機制二層：群組核銷指令本地高效率匹配
-    if is_group and ("核銷" in user_text):
-        settle_reply = process_settlement_local(target_id, creator_id, user_text)
-        if settle_reply:
-            try:
-                with ApiClient(line_config) as api_client:
-                    MessagingApi(api_client).push_message(PushMessageRequest(to=target_id, messages=[TextMessage(text=settle_reply)]))
-                return
-            except Exception: 
-                return
-
-    # 🔄 攔截機制三層：確認狀態機
+    # 🔄 攔截機制二層：確認狀態機
     if creator_id in PENDING_CONFIRMATIONS:
         if user_text in ["好", "要", "對", "確定", "可以", "好啊", "yes", "OK"]:
             saved_records = PENDING_CONFIRMATIONS.pop(creator_id)
@@ -322,7 +294,7 @@ def handle_text_message(event):
     else:
         # 常規管道分流：本地快速檢測
         local_records = is_pure_category_and_amount(user_text)
-        if local_records:
+        if local_records and not any(k in user_text for k in ["給", "還", "核銷"]):
             db_success = save_records_to_db_v2(target_id, is_group, creator_id, local_records)
             if db_success:
                 creator_name = get_line_user_profile(creator_id)
@@ -332,10 +304,23 @@ def handle_text_message(event):
             else: 
                 reply_str = "⚠️ 寫入失敗，請檢查網路連線。"
         else:
-            # 啟動 Gemini 運算大腦
+            # 🧠 啟動 Gemini 運算大腦
             try:
                 result = analyze_with_gemini_sync(user_text)
-                if result.intent == "record" and result.records:
+                
+                # 🎯 處理「智能核銷意圖」
+                if result.intent == "settlement" and result.settlement:
+                    if not is_group:
+                        reply_str = "💡 提示：核銷與平帳功能是「群組公帳模式」專屬，個人私帳不需要對帳喔！"
+                    else:
+                        s = result.settlement
+                        db_success = save_settlement_from_ai(target_id, creator_id, s)
+                        if db_success:
+                            reply_str = f"🤝 【群組智能核銷成功】\n💸 付款人：{s.payer_name}\n📥 收款人：{s.receiver_name}\n💰 金額：${s.amount:,} 元\n\n大腦已自動解析對話並完成雲端平帳登記！"
+                        else:
+                            reply_str = "⚠️ 智能核銷寫入資料庫時因連線異常延遲。"
+                
+                elif result.intent == "record" and result.records:
                     db_success = save_records_to_db_v2(target_id, is_group, creator_id, result.records)
                     if db_success:
                         creator_name = get_line_user_profile(creator_id)
@@ -351,17 +336,17 @@ def handle_text_message(event):
                     summary_text = get_monthly_quick_summary_v2(target_id, is_group)
                     dashboard_url = f"https://liff.line.me/{MY_LIFF_ID}?groupId={target_id}" if is_group else f"https://liff.line.me/{MY_LIFF_ID}"
                     reply_str = f"{summary_text}\n\n🌐 雲端可視化大後台：\n{dashboard_url}"
-                elif result.intent == "chat" or result.intent == "sensitive":
+                elif result.intent in ["chat", "sensitive"]:
                     reply_str = result.ai_reply
                 else: 
-                    reply_str = ""
+                    reply_str = "🤖 飯糰小幫手收到！若想對帳，請試試輸入「阿誠 還給 小明 500」喔！"
             except Exception as e:
                 print(f"Gemini 連線異常: {e}")
                 reply_str = "🤖 飯糰小幫手大腦思考稍微超時，請您再試一次！"
 
-    # 🛡️ Pydantic 強型別防禦：杜絕空回覆
+    # 🛡️ Pydantic 強型別防禦：若意外產生空回覆，直接靜默不推播
     if not reply_str or reply_str.strip() == "":
-        return  # 群組防吵延伸：若意外產生空回覆，直接靜默不推播
+        return  
 
     # 推播發送
     try:
@@ -372,4 +357,4 @@ def handle_text_message(event):
 
 @app.get("/")
 def health_check(): 
-    return {"status": "healthy", "version": "v3.0-OneManStudio-Final"}
+    return {"status": "healthy", "version": "v3.2-OneManStudio-Final"}
