@@ -239,23 +239,37 @@ def get_monthly_quick_summary(user_id: str) -> str:
 # ==========================================
 PENDING_CONFIRMATIONS = {}
 
+# ==========================================
+# 🌐 Webhook 入口與多執行緒異步調度 (完美修復版)
+# ==========================================
+PENDING_CONFIRMATIONS = {}
+
 @app.post("/callback")
 async def callback(request: Request, background_tasks: BackgroundTasks):
-    """🚀 核心機制：0.1 秒極速秒回 LINE 200 OK，把重度 AI 任務打包丟到背景，徹底防禦逾時！"""
+    """🚀 修正：入口保持 async def，用標準 await 秒讀 Webhook Body，
+    讀完後立刻打包丟給背景任務 (background_tasks)，0.1秒秒回 LINE 200 OK！
+    """
     signature = request.headers.get("X-Line-Signature")
-    if not signature: raise HTTPException(status_code=400, detail="Missing Signature")
+    if not signature: 
+        raise HTTPException(status_code=400, detail="Missing Signature")
     
+    # 🎯 用官方最安全的 await 讀取原始字串，絕不觸發 Status 1 閃退
     body = await request.body()
     body_str = body.decode("utf-8")
     
-    # 丟給 FastAPI 背景執行緒，立刻中斷與 LINE 的逾時倒數
+    # 💥 丟給 FastAPI 背景執行緒去慢慢算 AI，立刻 return OK 切斷 LINE 的逾時倒數
     background_tasks.add_task(handle_line_events_safe, body_str, signature)
     return "OK"
 
 
 def handle_line_events_safe(body_str: str, signature: str):
-    try: handler.handle(body_str, signature)
-    except InvalidSignatureError: print("❌ LINE 簽章驗證失敗")
+    """這是在獨立的背景執行緒運作，負責驅動 LINE SDK 的解析"""
+    try:
+        handler.handle(body_str, signature)
+    except InvalidSignatureError:
+        print("❌ LINE 簽章驗證失敗")
+    except Exception as e:
+        print(f"❌ 背景處理 LINE Webhook 時發生錯誤: {e}")
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
