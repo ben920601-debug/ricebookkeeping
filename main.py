@@ -290,23 +290,26 @@ def handle_text_message(event):
                     for rec in result.records:
                         reply_str += f"・[{'收入' if rec.record_type == 'income' else '支出'}] ${rec.amount} 元 的 {rec.item}\n"
                     reply_str += "\n👉 正確請回覆「好」，若錯誤請回覆任意文字取消。"
-                elif result.intent == "analyze": 
-                    summary_text = get_monthly_quick_summary_v2(target_id, is_group)
-                    
-                    if is_group:
-                        # 👥 群組模式：自動將目前對話的 target_id (也就是 groupId) 當成參數拼接上去
-                        dashboard_url = f"https://mi-li-ji-zhang-fen-xi.onrender.com/index.html?groupId={target_id}"
-                        reply_str = f"{summary_text}\n\n🌐 群組專屬財務後台網址：\n{dashboard_url}"
-                    else:
-                        # 👤 個人模式：維持原樣，不需要帶參數
-                        dashboard_url = f"https://mi-li-ji-zhang-fen-xi.onrender.com"
-                        reply_str = f"{summary_text}\n\n🌐 個人專屬雲端帳本：\n{dashboard_url}"
-                elif result.intent == "chat" or result.intent == "sensitive": 
-                    reply_str = result.ai_reply
-                else: reply_str = "👌"
-                    
-            except Exception:
-                reply_str = "🤖 飯糰大腦連線稍微波動，請稍後再試。"
+                    elif result.intent == "analyze": 
+                        summary_text = get_monthly_quick_summary_v2(target_id, is_group)
+                        
+                        # 🎯 這裡輸入你剛上線的全新 Render 後台網址！
+                        base_dashboard_url = "https://mi-li-ji-zhang-fen-xi.onrender.com"
+                        
+                        if is_group:
+                            # 👥 群組模式：自動拼接 ?groupId= 參數，實現多人公帳隔離
+                            dashboard_url = f"{base_dashboard_url}?groupId={target_id}"
+                            reply_str = f"{summary_text}\n\n🌐 群組專屬財務後台網址：\n{dashboard_url}"
+                        else:
+                            # 👤 個人模式：直接給原網址
+                            dashboard_url = base_dashboard_url
+                            reply_str = f"{summary_text}\n\n🌐 個人專屬雲端帳本：\n{dashboard_url}"
+                            elif result.intent == "chat" or result.intent == "sensitive": 
+                                reply_str = result.ai_reply
+                            else: reply_str = "👌"
+                                
+                        except Exception:
+                            reply_str = "🤖 飯糰大腦連線稍微波動，請稍後再試。"
 
     # 🚀 3. 推播回傳（注意：群組內要推給群組 target_id；個人推給個人）
     try:
