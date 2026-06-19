@@ -41,7 +41,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # 🔥 請填入你在 LINE Developers 後台看到的 LIFF ID
-MY_LIFF_ID = "YOUR_LIFF_ID_HERE" 
+MY_LIFF_ID = "2010446205-W1G1WDQQ" 
 
 line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
