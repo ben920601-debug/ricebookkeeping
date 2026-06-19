@@ -262,11 +262,13 @@ def handle_text_message(event):
 
     # 🚀 【核心優化：群組防吵與節流機制】
     # 如果是群組訊息，且「沒有被 Tag」也沒有提及機器人名字，直接句終不回應
+    
     is_mentioned = False
     if is_group:
         # 1. 檢查 LINE 官方的 mention 機制（使用者點選 @機器人）
+       # 🚀 修正後的寫法：
         mention = getattr(event.message, "mention", None)
-        if mention and mention.mentions:
+        if mention and mention.mentionees: # 🎯 對齊 LINE SDK 官方欄位
             is_mentioned = True
         
         # 2. 模糊匹配（使用者手打 @飯糰、飯糰小幫手、或純飯糰）
