@@ -260,6 +260,30 @@ def handle_text_message(event):
     is_group = event.source.type == "group"
     target_id = event.source.group_id if is_group else creator_id
 
+    # 🚀 【核心優化：群組防吵與節流機制】
+    # 如果是群組訊息，且「沒有被 Tag」也沒有提及機器人名字，直接句終不回應
+    is_mentioned = False
+    if is_group:
+        # 1. 檢查 LINE 官方的 mention 機制（使用者點選 @機器人）
+        mention = getattr(event.message, "mention", None)
+        if mention and mention.mentions:
+            is_mentioned = True
+        
+        # 2. 模糊匹配（使用者手打 @飯糰、飯糰小幫手、或純飯糰）
+        if any(keyword in user_text for keyword in ["@飯糰", "飯糰"]):
+            is_mentioned = True
+
+        # 3. 狀態機例外（如果該成員正在「確認記帳中」，允許不帶 tag 直接回覆「好/不要」）
+        if creator_id in PENDING_CONFIRMATIONS:
+            is_mentioned = True
+
+        # 💡 如果以上條件都不符合，代表不是在叫機器人，直接 return 結束，完全不耗 Token！
+        if not is_mentioned:
+            return
+
+        # 清洗掉文字中的標籤文字，避免干擾 AI 記帳語意解析
+        user_text = user_text.replace("@飯糰", "").replace("飯糰", "").strip()
+
     reply_str = ""
 
     # 🛑 攔截機制一層：敏感詞防禦
@@ -333,9 +357,9 @@ def handle_text_message(event):
                 print(f"Gemini 連線異常: {e}")
                 reply_str = "🤖 飯糰小幫手大腦思考稍微超時，請您再試一次！"
 
-    # 🛡️ Pydantic 強型別防禦：杜絕 TextMessage none 報錯
+    # 🛡️ Pydantic 強型別防禦：杜絕空回覆
     if not reply_str or reply_str.strip() == "":
-        reply_str = "🤖 飯糰小幫手收到！若想記帳，請輸入如「早餐 65 餐飲」；若想群組平帳，請輸入「核銷 500 阿誠」喔！"
+        return  # 群組防吵延伸：若意外產生空回覆，直接靜默不推播
 
     # 推播發送
     try:
