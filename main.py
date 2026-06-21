@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="記帳米粒 ｜ 俐落點單與智慧結單版")
+app = FastAPI(title="記帳米粒 ｜ 暱稱完美顯示版")
 
 # ==========================================
 # ⚙️ 1. 核心客戶端與資料庫初始化
@@ -101,15 +101,48 @@ def send_line_reply(reply_token: str, text: str):
     except Exception as e:
         print(f"❌ LINE 回覆失敗: {e}", flush=True)
 
-def fetch_line_profile_name(user_id: str) -> str:
-    url = f"https://api.line.me/v2/bot/profile/{user_id}"
+def get_real_mentions(event) -> list:
+    """🎯 核心修復：過濾掉機器人自身的 Tag，只抓取真實成員的 ID"""
+    real_tagged_ids = []
+    mention = getattr(event.message, "mention", None)
+    if mention and mention.mentionees:
+        text = getattr(event.message, "text", "")
+        for m in mention.mentionees:
+            u_id = getattr(m, "user_id", None)
+            if u_id:
+                try:
+                    tagged_text = text[m.index : m.index + m.length]
+                    # 如果 Tag 到的名字包含「米粒」，判定為機器人自己，直接略過
+                    if "米粒" in tagged_text:
+                        continue
+                except:
+                    pass
+                real_tagged_ids.append(u_id)
+    return real_tagged_ids
+
+def fetch_line_profile_name(user_id: str, target_id: str = None) -> str:
+    """🎯 核心修復：升級為群組成員 API，未加好友也能抓到真實暱稱"""
     headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    
+    # 1. 優先嘗試「群組成員 API」
+    if target_id and target_id.startswith("C"):
+        url = f"https://api.line.me/v2/bot/group/{target_id}/member/{user_id}"
+        try:
+            res = httpx.get(url, headers=headers, timeout=5.0)
+            if res.status_code == 200:
+                return res.json().get("displayName", f"成員({user_id[:4]})")
+        except Exception:
+            pass
+            
+    # 2. 退回使用「全域好友 API」
+    url = f"https://api.line.me/v2/bot/profile/{user_id}"
     try:
         res = httpx.get(url, headers=headers, timeout=5.0)
         if res.status_code == 200:
             return res.json().get("displayName", f"成員({user_id[:4]})")
     except Exception:
         pass
+        
     return f"成員({user_id[:4]})"
 
 def resolve_id_to_name(target_id: str, user_id: str) -> str:
@@ -121,7 +154,8 @@ def resolve_id_to_name(target_id: str, user_id: str) -> str:
         if doc_snap.exists:
             return doc_snap.to_dict().get("display_name", f"成員({user_id[:4]})")
         else:
-            real_name = fetch_line_profile_name(user_id)
+            # 傳遞 target_id 給 fetch_line_profile_name 以觸發群組 API
+            real_name = fetch_line_profile_name(user_id, target_id)
             member_ref.set({"user_id": user_id, "display_name": real_name, "updated_at": datetime.utcnow()})
             return real_name
     except Exception:
@@ -214,17 +248,14 @@ def handle_text_message(event):
             settle_amount = int(amount_match.group()) if amount_match else 0
             if settle_amount <= 0: return
 
-            tagged_user_ids = []
-            if mention and mention.mentionees:
-                for m in mention.mentionees:
-                    u_id = getattr(m, "user_id", None)
-                    if u_id: tagged_user_ids.append(u_id)
+            # 🎯 使用新的智慧 Tag 過濾機制
+            real_tagged_ids = get_real_mentions(event)
 
-            if len(tagged_user_ids) >= 2:
-                final_payer_id = tagged_user_ids[0]
-                final_receiver_id = tagged_user_ids[1]
-            elif len(tagged_user_ids) == 1:
-                final_payer_id = tagged_user_ids[0]
+            if len(real_tagged_ids) >= 2:
+                final_payer_id = real_tagged_ids[0]
+                final_receiver_id = real_tagged_ids[1]
+            elif len(real_tagged_ids) == 1:
+                final_payer_id = real_tagged_ids[0]
                 final_receiver_id = creator_id
             else:
                 final_payer_id = creator_id
@@ -318,13 +349,10 @@ def handle_text_message(event):
                 return
                 
             elif current_mode == "order" and is_group:
-                tagged_user_ids = []
-                if mention and mention.mentionees:
-                    for m in mention.mentionees:
-                        u_id = getattr(m, "user_id", None)
-                        if u_id: tagged_user_ids.append(u_id)
+                # 🎯 使用新的智慧 Tag 過濾機制
+                real_tagged_ids = get_real_mentions(event)
                         
-                actual_buyer_id = tagged_user_ids[0] if tagged_user_ids else creator_id
+                actual_buyer_id = real_tagged_ids[0] if real_tagged_ids else creator_id
                 actual_buyer_name = resolve_id_to_name(target_id, actual_buyer_id)
                 
                 g_ref = db.collection("groups").document(target_id)
@@ -334,7 +362,6 @@ def handle_text_message(event):
                     "item": item_name, "price": amount, "timestamp": datetime.utcnow().isoformat()
                 })
                 g_ref.update({"order_items_temp": temp_items})
-                # 🎯 修改：俐落回覆，不帶人名
                 send_line_reply(reply_token, f"📝 已接單：{item_name} ${amount}")
                 return
 
@@ -384,12 +411,9 @@ def handle_text_message(event):
                 g_ref = db.collection("groups").document(target_id)
                 temp_items = g_ref.get().to_dict().get("order_items_temp", [])
                 
-                tagged_user_ids = []
-                if mention and mention.mentionees:
-                    for m in mention.mentionees:
-                        u_id = getattr(m, "user_id", None)
-                        if u_id: tagged_user_ids.append(u_id)
-                actual_buyer_id = tagged_user_ids[0] if tagged_user_ids else creator_id
+                # 🎯 使用新的智慧 Tag 過濾機制
+                real_tagged_ids = get_real_mentions(event)
+                actual_buyer_id = real_tagged_ids[0] if real_tagged_ids else creator_id
                 actual_buyer_name = resolve_id_to_name(target_id, actual_buyer_id)
                 
                 reply_lines = []
@@ -399,13 +423,12 @@ def handle_text_message(event):
                         "buyer_id": actual_buyer_id, "buyer": actual_buyer_name,
                         "item": clean_item_name, "price": item.price, "timestamp": datetime.utcnow().isoformat()
                     })
-                    # 🎯 修改：俐落回覆，不帶人名
                     reply_lines.append(f"📝 已接單：{clean_item_name} ${item.price}")
                     
                 g_ref.update({"order_items_temp": temp_items})
                 send_line_reply(reply_token, "\n".join(reply_lines))
 
-        # 4. 截止結單 (🎯 修改：移除強制校驗單號防呆，智慧結單)
+        # 4. 截止結單
         elif result.intent == "order_end" and current_mode == "order" and is_group:
             g_ref = db.collection("groups").document(target_id)
             g_data = g_ref.get().to_dict()
@@ -436,4 +459,4 @@ def handle_text_message(event):
 
 @app.get("/")
 def health_check(): 
-    return {"status": "fast_regex_active", "version": "v10.1-Ultimate-SaaS"}
+    return {"status": "fast_regex_active", "version": "v11.0-Perfect-Name-Display"}
