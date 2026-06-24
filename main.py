@@ -460,3 +460,8 @@ def handle_text_message(event):
 @app.get("/")
 def health_check(): 
     return {"status": "fast_regex_active", "version": "v11.0-Perfect-Name-Display"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
