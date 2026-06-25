@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Literal, List, Optional
+from fastapi.middleware.cors import CORSMiddleware
 
 # LINE SDK v3
 from linebot.v3 import WebhookHandler
@@ -31,6 +32,14 @@ load_dotenv()
 
 app = FastAPI(title="記帳米粒 ｜ SQLite 輕量極速版")
 
+# 🎯 加入 CORS 跨域設定，允許您的 LIFF 網頁來抓取 API 資料
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允許所有網域請求
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ==========================================
 # ⚙️ 1. 核心客戶端與資料庫初始化
 # ==========================================
