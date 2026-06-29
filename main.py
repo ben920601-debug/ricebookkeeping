@@ -133,24 +133,35 @@ def fetch_line_profile_name(user_id: str, target_id: str = None) -> str:
     """🎯 核心修復：升級為群組成員 API，未加好友也能抓到真實暱稱"""
     headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
     
-    # 1. 優先嘗試「群組成員 API」
-    if target_id and target_id.startswith("C"):
-        url = f"https://api.line.me/v2/bot/group/{target_id}/member/{user_id}"
-        try:
-            res = httpx.get(url, headers=headers, timeout=5.0)
-            if res.status_code == 200:
-                return res.json().get("displayName", f"成員({user_id[:4]})")
-        except Exception:
-            pass
+    # 1. 優先嘗試「群組/聊天室 成員 API」
+    if target_id:
+        url = None
+        # 判斷是標準群組 (C) 還是多人聊天室 (R)
+        if target_id.startswith("C"):
+            url = f"https://api.line.me/v2/bot/group/{target_id}/member/{user_id}"
+        elif target_id.startswith("R"):
+            url = f"https://api.line.me/v2/bot/room/{target_id}/member/{user_id}"
+            
+        if url:
+            try:
+                # 💡 建議加上 follow_redirects=True 防呆
+                res = httpx.get(url, headers=headers, timeout=5.0, follow_redirects=True)
+                if res.status_code == 200:
+                    return res.json().get("displayName", f"成員({user_id[:4]})")
+                else:
+                    # 印出錯誤日誌，方便你看到底是哪一個網址變成了 404
+                    print(f"⚠️ LINE API 回傳狀態碼: {res.status_code}, 網址: {res.url}", flush=True)
+            except Exception as e:
+                print(f"⚠️ 請求群組 API 異常: {e}", flush=True)
             
     # 2. 退回使用「全域好友 API」
     url = f"https://api.line.me/v2/bot/profile/{user_id}"
     try:
-        res = httpx.get(url, headers=headers, timeout=5.0)
+        res = httpx.get(url, headers=headers, timeout=5.0, follow_redirects=True)
         if res.status_code == 200:
             return res.json().get("displayName", f"成員({user_id[:4]})")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"⚠️ 請求全域個人資料 API 異常: {e}", flush=True)
         
     return f"成員({user_id[:4]})"
 
